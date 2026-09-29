@@ -42,7 +42,7 @@ def fetch_candles(symbol, interval):
             "category": "SPOT",
             "symbol": symbol,
             "interval": interval,
-            "limit": 200,
+            "limit": 40,
         })
 
         status, body = get_json(
@@ -78,7 +78,7 @@ def fetch_candles(symbol, interval):
         q = urllib.parse.urlencode({
             "symbol": symbol,
             "granularity": V2_GRANULARITY[interval],
-            "limit": 200,
+            "limit": 40,
         })
 
         status, body = get_json(
