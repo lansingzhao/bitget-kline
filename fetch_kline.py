@@ -1,125 +1,57 @@
-import json
-import time
-import urllib.parse
-import urllib.request
-from datetime import datetime, timezone
+def summarize(rows, interval):
+    if len(rows) < 12:
+        return {"ok": False, "reason": "closed_candles_lt_12"}
 
-SYMBOLS = [
-    "SOLUSDT",
-    "TAOUSDT",
-    "NEARUSDT",
-    "UNIUSDT",
-    "LINKUSDT",
-    "XRPUSDT",
-    "HYPEUSDT",
-]
+    r = rows[-24:]
+    closes = [x["c"] for x in r]
 
-INTERVALS = ["15m", "1H", "4H"]
+    pls = pivot_lows(r)
+    phs = pivot_highs(r)
 
-V2_GRANULARITY = {
-    "15m": "15min",
-    "1H": "1h",
-    "4H": "4h",
-}
+    last_two_lows = [v for _, v in pls[-2:]]
+    last_two_highs = [v for _, v in phs[-2:]]
 
-HEADERS = {
-    "User-Agent": "bitget-kline-github-action/1.0",
-    "Accept": "application/json",
-}
+    higher_low = (
+        len(last_two_lows) == 2
+        and last_two_lows[-1] > last_two_lows[-2]
+    )
+    lower_low = (
+        len(last_two_lows) == 2
+        and last_two_lows[-1] < last_two_lows[-2]
+    )
+    higher_high = (
+        len(last_two_highs) == 2
+        and last_two_highs[-1] > last_two_highs[-2]
+    )
+    lower_high = (
+        len(last_two_highs) == 2
+        and last_two_highs[-1] < last_two_highs[-2]
+    )
 
+    latest = r[-1]
+    prior12 = r[-13:-1]
 
-def get_json(url, timeout=20):
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8"))
-
-
-def fetch_candles(symbol, interval):
-    v3_error = ""
-
-    try:
-        q = urllib.parse.urlencode({
-            "category": "SPOT",
-            "symbol": symbol,
-            "interval": interval,
-            "limit": 40,
-        })
-
-        status, body = get_json(
-            f"https://api.bitget.com/api/v3/market/candles?{q}"
-        )
-
-        if (
-            status == 200
-            and body.get("code") == "00000"
-            and isinstance(body.get("data"), list)
-            and body["data"]
-        ):
-            return {
-                "symbol": symbol,
-                "interval": interval,
-                "ok": True,
-                "source": "v3",
-                "candles": body["data"],
-                "v3": "success",
-                "v2": "not_needed",
-            }
-
-        v3_error = (
-            f'HTTP {status} | '
-            f'{body.get("code", "")} | '
-            f'{body.get("msg", "")}'
-        )
-
-    except Exception as e:
-        v3_error = str(e)
-
-    try:
-        q = urllib.parse.urlencode({
-            "symbol": symbol,
-            "granularity": V2_GRANULARITY[interval],
-            "limit": 40,
-        })
-
-        status, body = get_json(
-            f"https://api.bitget.com/api/v2/spot/market/candles?{q}"
-        )
-
-        if (
-            status == 200
-            and body.get("code") == "00000"
-            and isinstance(body.get("data"), list)
-            and body["data"]
-        ):
-            return {
-                "symbol": symbol,
-                "interval": interval,
-                "ok": True,
-                "source": "v2",
-                "candles": body["data"],
-                "v3": v3_error,
-                "v2": "success",
-            }
-
-        v2_error = (
-            f'HTTP {status} | '
-            f'{body.get("code", "")} | '
-            f'{body.get("msg", "")}'
-        )
-
-    except Exception as e:
-        v2_error = str(e)
-
-    return {
-        "symbol": symbol,
-        "interval": interval,
-        "ok": False,
-        "source": None,
-        "candles": [],
-        "v3": v3_error,
-        "v2": v2_error,
-        "error": "v3 and v2 both failed",
+    result = {
+        "ok": True,
+        "lastClosedTs": latest["ts"],
+        "close": round(latest["c"], 8),
+        "ret3Pct": pct(closes[-4], closes[-1]),
+        "ret8Pct": pct(closes[-9], closes[-1]),
+        "low12": round(min(x["l"] for x in r[-12:]), 8),
+        "high12": round(max(x["h"] for x in r[-12:]), 8),
+        "prior12Low": round(min(x["l"] for x in prior12), 8),
+        "prior12High": round(max(x["h"] for x in prior12), 8),
+        "higherLow": higher_low,
+        "lowerLow": lower_low,
+        "higherHigh": higher_high,
+        "lowerHigh": lower_high,
+        "last4Closes": [round(x, 8) for x in closes[-4:]],
     }
+
+    if interval == "15m":
+        result["abc"] = find_abc(r)
+
+    return result
 
 
 def main():
@@ -130,44 +62,64 @@ def main():
             results.append(fetch_candles(symbol, interval))
             time.sleep(0.08)
 
-    failures = [
+    failures = [x for x in results if not x["ok"]]
+    market = {}
+    quality_failures = []
+
+    for r in results:
+        if not r["ok"]:
+            continue
+
+        closed = normalize_closed(r["candles"], r["interval"])
+        summary = summarize(closed, r["interval"])
+
+        if not summary.get("ok"):
+            quality_failures.append({
+                "symbol": r["symbol"],
+                "interval": r["interval"],
+                "reason": summary.get("reason", "unknown"),
+            })
+
+        market.setdefault(r["symbol"], {})[r["interval"]] = summary
+
+    all_failures = [
         {
             "symbol": x["symbol"],
             "interval": x["interval"],
-            "v3": x.get("v3"),
-            "v2": x.get("v2"),
-            "error": x.get("error"),
+            "reason": x.get("error", "fetch_failed"),
         }
-        for x in results
-        if not x["ok"]
-    ]
+        for x in failures
+    ] + quality_failures
 
-    data = {}
+    rs = []
+    for symbol in SYMBOLS:
+        frames = market.get(symbol, {})
+        if all(k in frames and frames[k].get("ok") for k in INTERVALS):
+            score = (
+                frames["15m"]["ret8Pct"] * 0.25
+                + frames["1H"]["ret8Pct"] * 0.35
+                + frames["4H"]["ret3Pct"] * 0.40
+            )
+            rs.append((symbol, round(score, 4)))
 
-    for r in results:
-        data.setdefault(r["symbol"], {})[r["interval"]] = {
-            "ok": r["ok"],
-            "source": r["source"],
-            "candles": r["candles"],
-        }
+    rs.sort(key=lambda x: x[1], reverse=True)
 
     payload = {
         "source": "Bitget",
-        "generatedAt": datetime.now(timezone.utc)
-        .isoformat()
-        .replace("+00:00", "Z"),
-
-        "complete": len(failures) == 0,
-
+        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "schema": "compact-v1",
+        "complete": len(all_failures) == 0 and len(market) == len(SYMBOLS),
         "summary": {
             "expected": 21,
-            "success": sum(1 for x in results if x["ok"]),
-            "failed": len(failures),
+            "success": 21 - len(all_failures),
+            "failed": len(all_failures),
         },
-
-        "failures": failures,
-
-        "data": data,
+        "failures": all_failures,
+        "relativeStrength": [
+            {"symbol": s, "score": v}
+            for s, v in rs
+        ],
+        "market": market,
     }
 
     with open("kline.json", "w", encoding="utf-8") as f:
@@ -178,9 +130,13 @@ def main():
             separators=(",", ":"),
         )
 
-    print(json.dumps(payload["summary"], ensure_ascii=False))
+    print(json.dumps({
+        "complete": payload["complete"],
+        "summary": payload["summary"],
+        "bytes": len(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+    }, ensure_ascii=False))
 
-    if failures:
+    if not payload["complete"]:
         raise SystemExit(1)
 
 
