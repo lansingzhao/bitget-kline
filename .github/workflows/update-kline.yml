@@ -3,7 +3,7 @@ name: Update Bitget Klines
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7 * * * *"
+    - cron: "11 * * * *"
 
 permissions:
   contents: write
@@ -13,13 +13,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch Bitget klines
-        run: python3 fetch_kline.py
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Commit updated JSON
+      - name: Fetch Bitget klines
+        run: python fetch_kline.py
+
+      - name: Commit updated kline.json
         run: |
           if git diff --quiet -- kline.json; then
             echo "No kline changes"
