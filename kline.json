@@ -1,0 +1,16 @@
+{
+  "source": "Bitget",
+  "generatedAt": null,
+  "complete": false,
+  "summary": {
+    "expected": 21,
+    "success": 0,
+    "failed": 21
+  },
+  "failures": [
+    {
+      "error": "Waiting for first GitHub Actions run"
+    }
+  ],
+  "data": {}
+}
